@@ -31,7 +31,22 @@ The module takes as input the following:
 
 The directories of the above paths should have the following structure:
 ```
-    input_dir
+    b2_dir
+    ├── image1.RAS
+    ├── image1.RHD
+    ├── image2.RAS
+    └── image2.RHD
+    b3_dir
+    ├── image1.RAS
+    ├── image1.RHD
+    ├── image2.RAS
+    └── image2.RHD
+    b4_dir
+    ├── image1.RAS
+    ├── image1.RHD
+    ├── image2.RAS
+    └── image2.RHD
+    b8_dir
     ├── image1.RAS
     ├── image1.RHD
     ├── image2.RAS
