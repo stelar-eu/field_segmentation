@@ -56,10 +56,10 @@ RAS files are compressed binary files containing the reflectance values of satel
 Each RAS file should have an accompanying header file (.RHD), which contains the metadata of the RAS file such as the bounding box, the coordinate reference system and the timestamps of the images. 
 Based on the header files, the script first checks if the RAS files are aligned, i.e., if they have the same bounding box, coordinate reference system and timestamps. 
 If the RAS files are not aligned, the script will raise an error.
-**Note**: The input paths can be either a local path or a path to a folder in a MinIO object storage. In the latter case, the path should start with `s3://` followed by the MinIO server address and the bucket name, e.g., `s3://localhost:9000/mybucket/input_dir`. Also, the MinIO access key and secret key should be passed as arguments (see below).
+**Note**: The input paths can be either a local path or a path to a folder in a MinIO object storage. In the latter case, the path should start with `s3://` followed by the MinIO server address and the bucket name, e.g., `s3://mybucket/input_dir`. Also, the MinIO access key and secret key should be passed as arguments (see below).
 
 5. *output_path* (required): Path to the folder where the output files will be saved. 
-**Note**: The output path can be either a local path or a path to a folder in a MinIO object storage. In the latter case, the path should start with `s3://` followed by the MinIO server address and the bucket name, e.g., `s3://localhost:9000/mybucket/output_dir`. Also, the MinIO access key and secret key should be passed as arguments (see below).
+**Note**: The output path can be either a local path or a path to a folder in a MinIO object storage. In the latter case, the path should start with `s3://` followed by the MinIO server address and the bucket name, e.g., `s3://mybucket/output_dir`. Also, the MinIO access key and secret key should be passed as arguments (see below).
 
 6. *model_path* (required): Path to the folder containing the trained model for field segmentation. The model is a .h5 file, and contains a model following the Res-UNet architecture of Sentinel-Hub [github](https://github.com/sentinel-hub/field-delineation). The model is trained on Sentinel-2 images and is used to segment the fields in the input images.
 
@@ -68,6 +68,8 @@ If the RAS files are not aligned, the script will raise an error.
 8. *MINIO_ACCESS_KEY* (optional): Access key of the MinIO server. Required if the input or output paths are in a MinIO object storage.
 
 9. *MINIO_SECRET_KEY* (optional): Secret key of the MinIO server. Required if the input or output paths are in a MinIO object storage.
+
+10. *MINIO_ENDPOINT_URL* (optional): Endpoint URL of the MinIO server. Required if the input or output path is in a MinIO object storage.
 
 ## Output format
 The module outputs a shapefile named `fields.gpkg`  containing the field boundaries as polygons. The shapefile is saved in the output folder specified by the *output_path* argument.
@@ -98,30 +100,32 @@ docker pull alexdarancio7/stelar_field_segmentation:latest
 ```
 ### Example Usage
 Then, given we have the following input parameters:
-- *b2_path*: `s3://localhost:9000/path/to/b2_input_dir`
-- *b3_path*: `s3://localhost:9000/path/to/b3_input_dir`
-- *b4_path*: `s3://localhost:9000/path/to/b4_input_dir`
-- *b8_path*: `s3://localhost:9000/path/to/b8_input_dir`
-- *output_path*: `s3://localhost:9000/path/to/output_dir`
-- *model_path*: `s3://localhost:9000/path/to/model_dir`
+- *b2_path*: `s3://path/to/b2_input_dir`
+- *b3_path*: `s3://path/to/b3_input_dir`
+- *b4_path*: `s3://path/to/b4_input_dir`
+- *b8_path*: `s3://path/to/b8_input_dir`
+- *output_path*: `s3://path/to/output_dir`
+- *model_path*: `s3://path/to/model_dir`
 - *sdates*: `2021-01-01,2021-01-02`
 - *MINIO_ACCESS_KEY*: `minio`
 - *MINIO_SECRET_KEY*: `minio123`
+- *MINIO_ENDPOINT_URL*: `http://localhost:9000`
 
 We can run the module as follows:
 ```bash
 docker run -it \
 --network="host" \
 alexdarancio7/stelar_field_segmentation \
---b2_path s3://localhost:9000/path/to/b2_input_dir \
---b3_path s3://localhost:9000/path/to/b3_input_dir \
---b4_path s3://localhost:9000/path/to/b4_input_dir \
---b8_path s3://localhost:9000/path/to/b8_input_dir \
---output_path s3://localhost:9000/path/to/output_dir \
---model_path s3://localhost:9000/path/to/model_dir \
+--b2_path s3://path/to/b2_input_dir \
+--b3_path s3://path/to/b3_input_dir \
+--b4_path s3://path/to/b4_input_dir \
+--b8_path s3://path/to/b8_input_dir \
+--output_path s3://path/to/output_dir \
+--model_path s3://path/to/model_dir \
 --sdates '2021-01-01,2021-01-02' \
 --MINIO_ACCESS_KEY minio \
---MINIO_SECRET_KEY minio123
+--MINIO_SECRET_KEY minio123 \
+--MINIO_ENDPOINT_URL http://localhost:9000
 ```
 
 ## License & Acknowledgements

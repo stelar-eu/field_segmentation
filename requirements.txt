@@ -1,4 +1,4 @@
-stelar_spatiotemporal==0.0.5
+stelar_spatiotemporal==0.0.9
 opencv-python
 tensorflow
 tensorflow_addons
