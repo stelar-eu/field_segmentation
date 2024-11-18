@@ -1,5 +1,5 @@
 {
-    "docket_image": "alexdarancio7/field_segmentation:latest",
+    "docket_image": "alexdarancio7/stelar_field_segmentation:latest",
     "input": [
         {
             "path": "klms/Pilot_B/UCB2/33UUP/FIELD_SEGMENTATION/INPUT/B2",

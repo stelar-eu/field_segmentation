@@ -56,10 +56,10 @@ RAS files are compressed binary files containing the reflectance values of satel
 Each RAS file should have an accompanying header file (.RHD), which contains the metadata of the RAS file such as the bounding box, the coordinate reference system and the timestamps of the images. 
 Based on the header files, the script first checks if the RAS files are aligned, i.e., if they have the same bounding box, coordinate reference system and timestamps. 
 If the RAS files are not aligned, the script will raise an error.
-**Note**: The input paths can be either a local path or a path to a folder in a MinIO object storage. In the latter case, the path should start with `s3://` followed by the MinIO server address and the bucket name, e.g., `s3://mybucket/input_dir`. Also, the MinIO access key and secret key should be passed as arguments (see below).
+**Note**: The input paths can be either a local path or a path to a folder in a MinIO object storage. In the latter case, the MinIO access key and secret key should be passed as arguments (see below).
 
 5. *output_path* (required): Path to the folder where the output files will be saved. 
-**Note**: The output path can be either a local path or a path to a folder in a MinIO object storage. In the latter case, the path should start with `s3://` followed by the MinIO server address and the bucket name, e.g., `s3://mybucket/output_dir`. Also, the MinIO access key and secret key should be passed as arguments (see below).
+**Note**: The output path can be either a local path or a path to a folder in a MinIO object storage. In the latter case, the MinIO access key and secret key should be passed as arguments (see below).
 
 6. *model_path* (required): Path to the folder containing the trained model for field segmentation. The model is a .h5 file, and contains a model following the Res-UNet architecture of Sentinel-Hub [github](https://github.com/sentinel-hub/field-delineation). The model is trained on Sentinel-2 images and is used to segment the fields in the input images.
 
@@ -76,15 +76,9 @@ The module outputs a shapefile named `fields.gpkg`  containing the field boundar
 
 ## Metrics
 The module outputs the following metrics about the run as metadata:
-1. *start_time*: The start time of the run.
-2. *end_time*: The end time of the run.
-3. *duration*: The duration of the run in seconds.
-4. *status*: The status of the run, which can be either "success" or "failure".
-5. *error_message*: The error message in case the run failed.
-6. *input_shape*: The shape of the input images, in the format (height, width).
-7. *sdates*: The dates for which the field segmentation was performed.
-8. *model_path*: The path to the trained model used for field segmentation.
-9. *n_fields*: The number of fields detected in the input images.
+1. *total_runtime*: Total runtime of the module in seconds.
+2. *partial_runtimes*: Runtimes of the individual steps of the module in seconds.
+3. *n_fields*: Number of fields segmented in the input images.
 
 ## Installation & Example Usage
 The module can be installed either by (1) cloning the repository and building the Docker image, or (2) by pulling the image from DockerHub.
@@ -100,12 +94,12 @@ docker pull alexdarancio7/stelar_field_segmentation:latest
 ```
 ### Example Usage
 Then, given we have the following input parameters:
-- *b2_path*: `s3://path/to/b2_input_dir`
-- *b3_path*: `s3://path/to/b3_input_dir`
-- *b4_path*: `s3://path/to/b4_input_dir`
-- *b8_path*: `s3://path/to/b8_input_dir`
-- *output_path*: `s3://path/to/output_dir`
-- *model_path*: `s3://path/to/model_dir`
+- *b2_path*: `path/to/b2_input_dir`
+- *b3_path*: `path/to/b3_input_dir`
+- *b4_path*: `path/to/b4_input_dir`
+- *b8_path*: `path/to/b8_input_dir`
+- *output_path*: `path/to/output_dir`
+- *model_path*: `path/to/model_dir`
 - *sdates*: `2021-01-01,2021-01-02`
 - *MINIO_ACCESS_KEY*: `minio`
 - *MINIO_SECRET_KEY*: `minio123`
@@ -113,19 +107,43 @@ Then, given we have the following input parameters:
 
 We can run the module as follows:
 ```bash
-docker run -it \
---network="host" \
-alexdarancio7/stelar_field_segmentation \
---b2_path s3://path/to/b2_input_dir \
---b3_path s3://path/to/b3_input_dir \
---b4_path s3://path/to/b4_input_dir \
---b8_path s3://path/to/b8_input_dir \
---output_path s3://path/to/output_dir \
---model_path s3://path/to/model_dir \
---sdates '2021-01-01,2021-01-02' \
---MINIO_ACCESS_KEY minio \
---MINIO_SECRET_KEY minio123 \
---MINIO_ENDPOINT_URL http://localhost:9000
+docker run -v path/to/jsons:/app/resources -it \
+alexdarancio7/stelar_field_segmentation resources/input.json resources/output.json
+```
+where `input.json` is a JSON file formatted as follows:
+```json
+{
+    "docket_image": "alexdarancio7/stelar_field_segmentation:latest",
+    "input": [
+        {
+            "path": "path/to/b2_input_dir",
+            "name": "B2 path"
+        },
+        {
+            "path": "path/to/b3_input_dir",
+            "name": "B3 path"
+        },
+        {
+            "path": "path/to/b4_input_dir",
+            "name": "B4 path"
+        },
+        {
+            "path": "path/to/b8_input_dir",
+            "name": "B8 path"
+        }
+    ],
+    "parameters": {
+        "output_path": "path/to/output_dir",
+        "model_path": "path/to/model_dir",
+        "sdates": "2021-01-01,2021-01-02"
+    },
+    "minio": {
+        "id": "minio",
+        "key": "minio123",
+        "endpoint_url": "http://localhost:9000"
+    },
+    "tags": []
+}
 ```
 
 ## License & Acknowledgements
