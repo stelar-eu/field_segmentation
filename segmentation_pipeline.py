@@ -41,7 +41,7 @@ def cleanup(*args):
             os.system("rm -rf {}".format(todel_path))
 
 
-def segmentation_pipeline(bands_data_package:BandsDataPackage, out_path:Text, model_path:Text, sdates:List[dt.datetime] = None):
+def segmentation_pipeline(bands_data_package:BandsDataPackage, out_path:Text, model_path:Text, crs:CRS, sdates:List[dt.datetime] = None, vectorization_threshold:float = 0.8) -> dict:
     """
     Pipeline for segmenting a Sentinel-2 tile using a pre-trained ResUNet model.
 
@@ -66,8 +66,7 @@ def segmentation_pipeline(bands_data_package:BandsDataPackage, out_path:Text, mo
 
     print("1. Unpacking RAS files...")
     npy_dir = os.path.join(TMPDIR, "npys")
-    unpack_vista_reflectance(bands_data_package, outdir=npy_dir, crs=CRS(32630)) 
-
+    unpack_vista_reflectance(bands_data_package, outdir=npy_dir, crs=crs) 
 
     # Create band data package with local paths
     b2_path = os.path.join(npy_dir, "B2")
@@ -78,7 +77,7 @@ def segmentation_pipeline(bands_data_package:BandsDataPackage, out_path:Text, mo
 
     # Get the dates if it's not given
     if sdates is None:
-        sdates = ",".join([d.replace(".npy", "").replace("_", "-") for d in os.listdir(npy_data_package.B2_package.BAND_PATH) if d.endswith(".npy")])
+        sdates = ",".join([d.replace(".npy", "").replace("_", "-") for d in os.listdir(npy_data_package.B2_package.BAND_DIR) if d.endswith(".npy")])
         sdates = parse_sdates(sdates)
 
     partial_times.append({
@@ -135,7 +134,7 @@ def segmentation_pipeline(bands_data_package:BandsDataPackage, out_path:Text, mo
 
     print("5. Vectorizing segmentation...")
     vecs_dir = os.path.join(TMPDIR, "contours")
-    vectorize_patchlets(plet_dir, outdir=vecs_dir)
+    vectorize_patchlets(plet_dir, outdir=vecs_dir, threshold=vectorization_threshold)
 
     partial_times.append({
         "step": "Vectorizing segmentation",
@@ -146,23 +145,19 @@ def segmentation_pipeline(bands_data_package:BandsDataPackage, out_path:Text, mo
     start = time.time()
 
     print("6. Combining patchlet shapes into single shapefile...")
-    combine_patchlet_shapes(vecs_dir, out_path)
+    n_fields = combine_patchlet_shapes(vecs_dir, out_path, crs=crs)
 
     partial_times.append({
         "step": "Combining patchlet shapes into single shapefile",
         "runtime": time.time() - start
     })
 
-    # Read final shapefile to get number of fields
-    tmp_path = os.path.join("/tmp", os.path.basename(out_path))
-    n_fields = gpd.read_file(tmp_path).shape[0]
-    
     # 7. Create the output response
     response = {
         "message": "Segmentation pipeline completed successfully.",
         "output": [
             {
-                "path": output_path,
+                "path": out_path,
                 "type": "Output shapefile"
             }
         ],
@@ -172,7 +167,7 @@ def segmentation_pipeline(bands_data_package:BandsDataPackage, out_path:Text, mo
             "b4_path": b4_path,
             "b8_path": b8_path,
             "model_path": model_path,
-            "sdates": sdates,
+            "sdates": [d.strftime("%Y-%m-%d") for d in sdates],
             "total_runtime": time.time() - total_start,
             "partial_runtimes": partial_times,
             "n_fields": n_fields,
@@ -189,69 +184,72 @@ if __name__ == "__main__":
         input_json_path = sys.argv[1]
         output_json_path = sys.argv[2]
 
-
     # Read and parse the input JSON file
     with open(input_json_path, "r") as f:
         input_json = json.load(f)
 
-    # Necessary arguments
+    # Check for result key in the JSON structure
+    if "result" in input_json:
+        input_json = input_json["result"]
+
+    # Necessary arguments - extract paths from the RGB list
     try:
-        input_paths = input_json["input"]
-
-        # Get the b2 path
-        b2_paths = [p for p in input_paths if "B2" in p['name']]
-        b2_path = b2_paths[0]['path']
-
-        # Get the b3 path
-        b3_paths = [p for p in input_paths if "B3" in p['name']]
-        b3_path = b3_paths[0]['path']
-
-        # Get the b4 path
-        b4_paths = [p for p in input_paths if "B4" in p['name']]
-        b4_path = b4_paths[0]['path']
-
-        # Get the b8 path
-        b8_paths = [p for p in input_paths if "B8" in p['name']]
-        b8_path = b8_paths[0]['path']
+        # Get all input files from the RGB list
+        input_files = input_json["input"]["RGB"]
+        
+        # Create bands data package using the from_file_list method
+        bands_data_package = BandsDataPackage.from_file_list(input_files, file_extension="RAS")
+        
     except Exception as e:
-        raise ValueError("Passed input paths are not correct. Please see the documentation for the suggested input format. Error: {}".format(e))
+        raise ValueError(f"Passed input paths are not correct. Please see the documentation for the suggested input format. Error: {e}")
     
     # More required arguments
     try:
-        output_path = input_json["parameters"]["output_path"]
+        output_path = input_json["output"]["segmentation_map"]
         model_path = input_json["parameters"]["model_path"]
-        sdates = input_json["parameters"]["sdates"]
+        sdates = input_json["parameters"].get("sdates")
+        
+        # Parse CRS if provided, otherwise default to WGS84
+        crs_value = input_json["parameters"].get("crs")
+        if crs_value:
+            if crs_value.lower() == "wgs84":
+                crs = CRS.WGS84
+            elif crs_value.lower() == "pop_web":
+                crs = CRS.POP_WEB
+            else:
+                try:
+                    # Try to parse as EPSG code
+                    epsg_code = int(crs_value.replace("epsg:", "").strip())
+                    crs = CRS(epsg_code)
+                except:
+                    print(f"Unknown CRS value: {crs_value}, defaulting to WGS84")
+                    crs = CRS.WGS84
+        else:
+            crs = CRS.WGS84
     except Exception as e:
-        raise ValueError("Missing required arguments. Please see the documentation for the suggested input format. Error: {}".format(e))
-
+        raise ValueError(f"Missing required arguments. Please see the documentation for the suggested input format. Error: {e}")
     
     # Check if minio credentials are provided
     if "minio" in input_json:
         try:
             id = input_json["minio"]["id"]
             key = input_json["minio"]["key"]
+            token = input_json["minio"].get("skey")
             url = input_json["minio"]["endpoint_url"]
 
             os.environ["MINIO_ACCESS_KEY"] = id
             os.environ["MINIO_SECRET_KEY"] = key
             os.environ["MINIO_ENDPOINT_URL"] = url
 
+            # If token is provided, set it as well
+            if token:
+                os.environ["MINIO_SESSION_TOKEN"] = token
+
             os.environ["AWS_ACCESS_KEY_ID"] = id
             os.environ["AWS_SECRET_ACCESS_KEY"] = key
-
-            # Add s3:// to the input and output paths
-            b2_path = "s3://" + b2_path
-            b3_path = "s3://" + b3_path
-            b4_path = "s3://" + b4_path
-            b8_path = "s3://" + b8_path
-            output_path = "s3://" + output_path
-            model_path = "s3://" + model_path
         except Exception as e:
-            raise ValueError("Access and secret keys are required if any path is on MinIO. Error: {}".format(e))
+            raise ValueError(f"Access and secret keys are required if any path is on MinIO. Error: {e}")
 
-    # Create bands data bundle
-    bands_data_package = BandsDataPackage(b2_path=b2_path, b3_path=b3_path, b4_path=b4_path, b8_path=b8_path, file_extension="RAS")
-    
     # Parse the segment dates
     sdates = parse_sdates(sdates)
     
@@ -260,7 +258,10 @@ if __name__ == "__main__":
         bands_data_package, 
         output_path, 
         model_path, 
-        sdates)
+        crs=crs,  # Use parsed CRS
+        sdates=sdates,
+        vectorization_threshold=input_json["parameters"].get("vectorization_threshold", 0.8) # Default to 0.8 if not provided
+        )
     
     # Write the output JSON file
     with open(output_json_path, "w") as f:
@@ -268,4 +269,3 @@ if __name__ == "__main__":
 
     print(response)
 
-    
