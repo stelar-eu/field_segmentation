@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 COPY requirements.txt ./
-COPY segmentation_pipeline.py ./
+COPY main.py ./
 COPY run.sh ./
 
 # Install any needed packages specified in requirements.txt

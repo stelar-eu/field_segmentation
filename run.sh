@@ -30,7 +30,7 @@ result=$(echo "$response" | jq '.result')
 echo "$result" > input.json
 
 # Execute the tool
-python segmentation_pipeline.py input.json output.json
+python main.py input.json output.json
 
 # Perform the second curl request with replacements and store the response in a variable
 output_json=$(<output.json)  # Read content of output.json file into a variable

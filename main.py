@@ -2,6 +2,7 @@ import os
 import json
 import time
 import sys
+import argparse
 import datetime as dt
 from sentinelhub import CRS
 from typing import List, Text, Tuple
@@ -41,7 +42,7 @@ def cleanup(*args):
             os.system("rm -rf {}".format(todel_path))
 
 
-def segmentation_pipeline(bands_data_package:BandsDataPackage, out_path:Text, model_path:Text, crs:CRS, sdates:List[dt.datetime] = None, vectorization_threshold:float = 0.8) -> dict:
+def segmentation_pipeline(bands_data_package:BandsDataPackage, out_path:Text, model_path:Text, crs:CRS, sdates:List[dt.datetime] = None, vectorization_threshold:float = 0.8, tmpdir:Text = '/tmp') -> dict:
     """
     Pipeline for segmenting a Sentinel-2 tile using a pre-trained ResUNet model.
 
@@ -55,11 +56,15 @@ def segmentation_pipeline(bands_data_package:BandsDataPackage, out_path:Text, mo
         Path to the pre-trained ResUNet model
     sdates : List[dt.datetime], optional
         List of dates to segment, by default None (segment all overlapping dates in the RAS files)
+    vectorization_threshold : float, optional
+        Threshold for vectorization, by default 0.8
+    tmpdir : Text, optional
+        Directory for temporary files, by default '/tmp'
     """
     total_start = time.time()
     partial_times = []
     
-    TMPDIR = '/tmp'
+    TMPDIR = tmpdir
         
     # 1. # Unpacks RAS and RHD files into numpy arrays
     start = time.time()
@@ -177,12 +182,24 @@ def segmentation_pipeline(bands_data_package:BandsDataPackage, out_path:Text, mo
     return response
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3: # If no arguments are given, use the default values
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="Field Segmentation Pipeline")
+    parser.add_argument("input_json", nargs="?", help="Path to input JSON file")
+    parser.add_argument("output_json", nargs="?", help="Path to output JSON file")
+    parser.add_argument("--tmpdir", type=str, help="Directory for temporary files", default="/tmp")
+    
+    args = parser.parse_args()
+    
+    # Set default values for input and output JSON paths if not provided
+    if not args.input_json:
         input_json_path = "/home/jens/ownCloud/Documents/3.Werk/0.TUe_Research/0.STELAR/0.VISTA/VISTA_workbench/src/modules/segmentation/resources/input.json"
+    else:
+        input_json_path = args.input_json
+    
+    if not args.output_json:
         output_json_path = "/home/jens/ownCloud/Documents/3.Werk/0.TUe_Research/0.STELAR/0.VISTA/VISTA_workbench/src/modules/segmentation/resources/output.json"
     else:
-        input_json_path = sys.argv[1]
-        output_json_path = sys.argv[2]
+        output_json_path = args.output_json
 
     # Read and parse the input JSON file
     with open(input_json_path, "r") as f:
@@ -253,6 +270,10 @@ if __name__ == "__main__":
     # Parse the segment dates
     sdates = parse_sdates(sdates)
     
+    # Check if tmpdir is provided in command line or parameters
+    # Command line argument has priority over JSON parameter
+    tmpdir = args.tmpdir if args.tmpdir else input_json["parameters"].get("tmpdir", '/tmp')
+    
     # Run the pipeline
     response = segmentation_pipeline(
         bands_data_package, 
@@ -260,7 +281,8 @@ if __name__ == "__main__":
         model_path, 
         crs=crs,  # Use parsed CRS
         sdates=sdates,
-        vectorization_threshold=input_json["parameters"].get("vectorization_threshold", 0.8) # Default to 0.8 if not provided
+        vectorization_threshold=input_json["parameters"].get("vectorization_threshold", 0.8), # Default to 0.8 if not provided
+        tmpdir=tmpdir
         )
     
     # Write the output JSON file

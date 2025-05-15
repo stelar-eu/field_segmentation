@@ -71,6 +71,8 @@ If the RAS files are not aligned, the script will raise an error.
 
 10. *MINIO_ENDPOINT_URL* (optional): Endpoint URL of the MinIO server. Required if the input or output path is in a MinIO object storage.
 
+11. *tmpdir* (optional): Directory for temporary files. Default is '/tmp'. This parameter can be used to specify an alternative directory for storing intermediate data during processing.
+
 ## Output format
 The module outputs a shapefile named `fields.gpkg`  containing the field boundaries as polygons. The shapefile is saved in the output folder specified by the *output_path* argument.
 

@@ -1,5 +1,5 @@
 DOCKER=docker
-IMGTAG=alexdarancio7/stelar_field_segmentation:latest
+IMGTAG=img.stelar.gr/stelar/field-segmentation:latest
 IMGPATH=.
 DOCKERFILE=$(IMGPATH)/Dockerfile
 
