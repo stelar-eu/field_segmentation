@@ -1,9 +1,11 @@
-stelar_spatiotemporal==0.0.29
+stelar_spatiotemporal==0.0.30
 opencv-python
 protobuf
 munch
-numpy
+numpy==1.26.4
 pystac
 pystac-client
-tensorflow_addons
+tensorflow==2.10.1
+tensorflow-addons==0.20.0
 sentinelhub
+minio

@@ -4,11 +4,15 @@ import time
 import sys
 import argparse
 import datetime as dt
-from sentinelhub import CRS
+import rasterio
+import numpy as np
+from minio import Minio
+from rasterio.crs import CRS as RioCRS
+from sentinelhub import CRS, BBox
 from typing import List, Text, Tuple
+from stelar_spatiotemporal.lib import get_filesystem
 from stelar_spatiotemporal.preprocessing.preprocessing import combine_npys_into_eopatches
-from stelar_spatiotemporal.preprocessing.vista_preprocessing import unpack_vista_reflectance
-from stelar_spatiotemporal.segmentation.bands_data_package import BandsDataPackage, BandDataPackage
+from stelar_spatiotemporal.eolearn.core import EOPatch, FeatureType
 from stelar_spatiotemporal.segmentation.segmentation import *
 from stelar_spatiotemporal.eolearn.core import OverwritePermission
 import warnings
@@ -41,21 +45,38 @@ def cleanup(*args):
             print("Deleting {}".format(todel_path))
             os.system("rm -rf {}".format(todel_path))
 
+def setup_client():
+    """
+    Setup the MinIO client using environment variables.
+    """
+    try:
+        url = os.environ["MINIO_ENDPOINT_URL"]
+        access_key = os.environ["MINIO_ACCESS_KEY"]
+        secret_key = os.environ["MINIO_SECRET_KEY"]
 
-def segmentation_pipeline(bands_data_package:BandsDataPackage, out_path:Text, model_path:Text, crs:CRS, sdates:List[dt.datetime] = None, vectorization_threshold:float = 0.8, tmpdir:Text = '/tmp') -> dict:
+        minio_client = Minio(
+            url.replace("https://", "").replace("http://", ""),
+            access_key=access_key,
+            secret_key=secret_key,
+            secure= url.startswith("https://")
+        )
+        return minio_client
+    except KeyError as e:
+        raise ValueError(f"Missing environment variable: {e}")
+
+
+def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vectorization_threshold: float = 0.8, tmpdir: Text = '/tmp') -> dict:
     """
     Pipeline for segmenting a Sentinel-2 tile using a pre-trained ResUNet model.
 
     Parameters
     ----------
-    bands_data_package : BandsDataPackage
-        Data package containing the paths to the RAS files with RGBNIR bands
+    tif_path : Text
+        Path to the input TIF file containing RGBNIR bands
     out_path : Text
         Path to the output shapefile
     model_path : Text
         Path to the pre-trained ResUNet model
-    sdates : List[dt.datetime], optional
-        List of dates to segment, by default None (segment all overlapping dates in the RAS files)
     vectorization_threshold : float, optional
         Threshold for vectorization, by default 0.8
     tmpdir : Text, optional
@@ -66,46 +87,76 @@ def segmentation_pipeline(bands_data_package:BandsDataPackage, out_path:Text, mo
     
     TMPDIR = tmpdir
         
-    # 1. # Unpacks RAS and RHD files into numpy arrays
+    # 1. Read TIF file and create eopatch
     start = time.time()
 
-    print("1. Unpacking RAS files...")
-    npy_dir = os.path.join(TMPDIR, "npys")
-    unpack_vista_reflectance(bands_data_package, outdir=npy_dir, crs=crs) 
+    print("1. Reading TIF file and creating eopatch...")
+    
+    # Download the TIF file if it is on MinIO
+    if tif_path.startswith("s3://"):
+        bucket_name, object_name = tif_path.replace("s3://", "").split('/', 1)
+        local_tif_path = os.path.join(TMPDIR, os.path.basename(object_name))
+        if not os.path.exists(local_tif_path):
+            client = setup_client()
+            print(f"Downloading {tif_path} to {local_tif_path}...")
+            client.fget_object(bucket_name, object_name, local_tif_path)
+        tif_path = local_tif_path
+    
+    with rasterio.open(tif_path) as src:
+        # Read the bands (assuming RGBNIR order: B2, B3, B4, B8A)
+        bands_data = src.read()  # Shape: (bands, height, width)
 
-    # Create band data package with local paths
-    b2_path = os.path.join(npy_dir, "B2")
-    b3_path = os.path.join(npy_dir, "B3")
-    b4_path = os.path.join(npy_dir, "B4")
-    b8_path = os.path.join(npy_dir, "B8A")
-    npy_data_package = BandsDataPackage(b2_path, b3_path, b4_path, b8_path, file_extension="npy")
+        if bands_data.shape[0] == 9:
+            bands_data = bands_data[[0,1,2,6], :, :]  # Select B2, B3, B4, B8A (RGBNIR)
+        elif bands_data.shape[0] != 4:
+            raise ValueError(f"Expected 4 bands (RGBNIR), but found {bands_data.shape[0]} bands in the TIF file.")
+        
+        bands_data *= 100 # To match the old RAS format scaling
 
-    # Get the dates if it's not given
-    if sdates is None:
-        sdates = ",".join([d.replace(".npy", "").replace("_", "-") for d in os.listdir(npy_data_package.B2_package.BAND_DIR) if d.endswith(".npy")])
-        sdates = parse_sdates(sdates)
+        print(f"Read {bands_data.shape[0]} bands from TIF file: {tif_path}")
 
-    partial_times.append({
-        "step": "Unpacking RAS files",
-        "runtime": time.time() - start
-    })
-
-    # 2. Combining the images into one eopatch
-    start = time.time()
-
-    print("2. Combining images into one eopatch...")
+        crs = CRS(src.crs.to_epsg()) if src.crs else CRS.WGS84
+        transform = src.transform
+        
+        # Get date from filename or metadata (assuming format contains date)
+        filename = os.path.basename(tif_path)
+        # Extract date from filename pattern like S2B_30TYQ2BP_220614_R.TIF
+        try:
+            date_str = filename.split('_')[2]  # Gets '220614'
+            # Convert YYMMDD to datetime
+            year = 2000 + int(date_str[:2])
+            month = int(date_str[2:4])
+            day = int(date_str[4:6])
+            acquisition_date = dt.datetime(year, month, day)
+        except:
+            # Fallback to current date if parsing fails
+            acquisition_date = dt.datetime.now()
+    
+    # Create eopatch directly from the TIF data
     eopatches_dir = os.path.join(TMPDIR, "segment_eopatch")
-    eop_path = combine_rgb_npys_into_eopatch(npy_data_package, outdir=eopatches_dir, dates=sdates)
+    os.makedirs(eopatches_dir, exist_ok=True)
+    eop_path = os.path.join(eopatches_dir, "eopatch")
+    
+    # Transpose bands data to match eopatch format (time, height, width, bands)
+    bands_data_transposed = np.transpose(bands_data, (1, 2, 0))  # (height, width, bands)
+    bands_data_with_time = np.expand_dims(bands_data_transposed, axis=0)  # (1, height, width, bands)
+    
+    # Create eopatch
+    eopatch = EOPatch()
+    eopatch.data['BANDS'] = bands_data_with_time
+    eopatch.timestamp = [acquisition_date]
+    eopatch.bbox = BBox(bbox=src.bounds, crs=crs)
+    eopatch.save(eop_path, overwrite_permission=OverwritePermission.OVERWRITE_PATCH)
 
     partial_times.append({
-        "step": "Combining images into eopatch",
+        "step": "Reading TIF file and creating eopatch",
         "runtime": time.time() - start
     })
 
-    # 3. Splitting the eopatch into patchlets
+    # 2. Splitting the eopatch into patchlets
     start = time.time()
 
-    print("3. Splitting eopatch into patchlets...")
+    print("2. Splitting eopatch into patchlets...")
     plet_dir = os.path.join(TMPDIR, "patchlets")
 
     # Decide buffer and patchlet size; if full tile is smaller than patchlet, make buffer 0, else 100
@@ -123,10 +174,10 @@ def segmentation_pipeline(bands_data_package:BandsDataPackage, out_path:Text, mo
         "runtime": time.time() - start
     })
 
-    # 4. Run segmentation
+    # 3. Run segmentation
     start = time.time()
 
-    print("4. Running segmentation...")
+    print("3. Running segmentation...")
     segment_patchlets(model_path, plet_dir)
 
     partial_times.append({
@@ -134,10 +185,10 @@ def segmentation_pipeline(bands_data_package:BandsDataPackage, out_path:Text, mo
         "runtime": time.time() - start
     })
 
-    # 5. Vectorize segmentation
+    # 4. Vectorize segmentation
     start = time.time()
 
-    print("5. Vectorizing segmentation...")
+    print("4. Vectorizing segmentation...")
     vecs_dir = os.path.join(TMPDIR, "contours")
     vectorize_patchlets(plet_dir, outdir=vecs_dir, threshold=vectorization_threshold)
 
@@ -146,18 +197,18 @@ def segmentation_pipeline(bands_data_package:BandsDataPackage, out_path:Text, mo
         "runtime": time.time() - start
     })
 
-    # 6. Combine patchlets shapes single shapefile
+    # 5. Combine patchlets shapes single shapefile
     start = time.time()
 
-    print("6. Combining patchlet shapes into single shapefile...")
-    n_fields = combine_patchlet_shapes(vecs_dir, out_path, crs=crs)
+    print("5. Combining patchlet shapes into single shapefile...")
+    n_fields = combine_patchlet_shapes(vecs_dir, out_path)
 
     partial_times.append({
         "step": "Combining patchlet shapes into single shapefile",
         "runtime": time.time() - start
     })
 
-    # 7. Create the output response
+    # 6. Create the output response
     response = {
         "message": "Segmentation pipeline completed successfully.",
         "output": [
@@ -167,12 +218,10 @@ def segmentation_pipeline(bands_data_package:BandsDataPackage, out_path:Text, mo
             }
         ],
         "metrics": {
-            "b2_path": b2_path,
-            "b3_path": b3_path,
-            "b4_path": b4_path,
-            "b8_path": b8_path,
+            "tif_path": tif_path,
             "model_path": model_path,
-            "sdates": [d.strftime("%Y-%m-%d") for d in sdates],
+            "acquisition_date": acquisition_date.strftime("%Y-%m-%d"),
+            "crs": str(crs),
             "total_runtime": time.time() - total_start,
             "partial_runtimes": partial_times,
             "n_fields": n_fields,
@@ -209,40 +258,16 @@ if __name__ == "__main__":
     if "result" in input_json:
         input_json = input_json["result"]
 
-    # Necessary arguments - extract paths from the RGB list
+    # Get the TIF file path
     try:
-        # Get all input files from the RGB list
-        input_files = input_json["input"]["RGB"]
-        
-        # Create bands data package using the from_file_list method
-        bands_data_package = BandsDataPackage.from_file_list(input_files, file_extension="RAS")
-        
+        tif_path = input_json["input"]["RGB"]
     except Exception as e:
-        raise ValueError(f"Passed input paths are not correct. Please see the documentation for the suggested input format. Error: {e}")
+        raise ValueError(f"TIF path not found in input. Error: {e}")
     
     # More required arguments
     try:
         output_path = input_json["output"]["segmentation_map"]
         model_path = input_json["parameters"]["model_path"]
-        sdates = input_json["parameters"].get("sdates")
-        
-        # Parse CRS if provided, otherwise default to WGS84
-        crs_value = input_json["parameters"].get("crs")
-        if crs_value:
-            if crs_value.lower() == "wgs84":
-                crs = CRS.WGS84
-            elif crs_value.lower() == "pop_web":
-                crs = CRS.POP_WEB
-            else:
-                try:
-                    # Try to parse as EPSG code
-                    epsg_code = int(crs_value.replace("epsg:", "").strip())
-                    crs = CRS(epsg_code)
-                except:
-                    print(f"Unknown CRS value: {crs_value}, defaulting to WGS84")
-                    crs = CRS.WGS84
-        else:
-            crs = CRS.WGS84
     except Exception as e:
         raise ValueError(f"Missing required arguments. Please see the documentation for the suggested input format. Error: {e}")
     
@@ -264,11 +289,10 @@ if __name__ == "__main__":
 
             os.environ["AWS_ACCESS_KEY_ID"] = id
             os.environ["AWS_SECRET_ACCESS_KEY"] = key
+            if token:
+                os.environ["AWS_SESSION_TOKEN"] = token
         except Exception as e:
             raise ValueError(f"Access and secret keys are required if any path is on MinIO. Error: {e}")
-
-    # Parse the segment dates
-    sdates = parse_sdates(sdates)
     
     # Check if tmpdir is provided in command line or parameters
     # Command line argument has priority over JSON parameter
@@ -276,11 +300,9 @@ if __name__ == "__main__":
     
     # Run the pipeline
     response = segmentation_pipeline(
-        bands_data_package, 
+        tif_path, 
         output_path, 
         model_path, 
-        crs=crs,  # Use parsed CRS
-        sdates=sdates,
         vectorization_threshold=input_json["parameters"].get("vectorization_threshold", 0.8), # Default to 0.8 if not provided
         tmpdir=tmpdir
         )
