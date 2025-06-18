@@ -53,11 +53,13 @@ def setup_client():
         url = os.environ["MINIO_ENDPOINT_URL"]
         access_key = os.environ["MINIO_ACCESS_KEY"]
         secret_key = os.environ["MINIO_SECRET_KEY"]
+        session_token = os.environ.get("MINIO_SESSION_TOKEN", None)
 
         minio_client = Minio(
             url.replace("https://", "").replace("http://", ""),
             access_key=access_key,
             secret_key=secret_key,
+            session_token=session_token if session_token else None,
             secure= url.startswith("https://")
         )
         return minio_client
@@ -83,7 +85,7 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
         Directory for temporary files, by default '/tmp'
     """
     total_start = time.time()
-    partial_times = []
+    partial_times = {}
     
     TMPDIR = tmpdir
         
@@ -115,9 +117,7 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
 
         print(f"Read {bands_data.shape[0]} bands from TIF file: {tif_path}")
 
-        crs = CRS(src.crs.to_epsg()) if src.crs else CRS.WGS84
-        transform = src.transform
-        
+        crs = CRS(src.crs.to_epsg()) if src.crs else CRS.WGS84        
         # Get date from filename or metadata (assuming format contains date)
         filename = os.path.basename(tif_path)
         # Extract date from filename pattern like S2B_30TYQ2BP_220614_R.TIF
@@ -132,7 +132,7 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
             # Fallback to current date if parsing fails
             acquisition_date = dt.datetime.now()
     
-    # Create eopatch directly from the TIF data
+    # Create eopatch directly from  theTIF data
     eopatches_dir = os.path.join(TMPDIR, "segment_eopatch")
     os.makedirs(eopatches_dir, exist_ok=True)
     eop_path = os.path.join(eopatches_dir, "eopatch")
@@ -148,10 +148,7 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
     eopatch.bbox = BBox(bbox=src.bounds, crs=crs)
     eopatch.save(eop_path, overwrite_permission=OverwritePermission.OVERWRITE_PATCH)
 
-    partial_times.append({
-        "step": "Reading TIF file and creating eopatch",
-        "runtime": time.time() - start
-    })
+    partial_times["tif_reading_eopatch_creation"] = time.time() - start
 
     # 2. Splitting the eopatch into patchlets
     start = time.time()
@@ -169,10 +166,7 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
 
     patchify_segmentation_data(eop_path, outdir=plet_dir, n_jobs=1, patchlet_size=patchlet_shape, buffer=buffer)
 
-    partial_times.append({
-        "step": "Splitting eopatch into patchlets",
-        "runtime": time.time() - start
-    })
+    partial_times["eopatch_split_into_patchlets"] = time.time() - start
 
     # 3. Run segmentation
     start = time.time()
@@ -180,10 +174,7 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
     print("3. Running segmentation...")
     segment_patchlets(model_path, plet_dir)
 
-    partial_times.append({
-        "step": "Running segmentation",
-        "runtime": time.time() - start
-    })
+    partial_times["segmentation"] = time.time() - start
 
     # 4. Vectorize segmentation
     start = time.time()
@@ -192,10 +183,7 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
     vecs_dir = os.path.join(TMPDIR, "contours")
     vectorize_patchlets(plet_dir, outdir=vecs_dir, threshold=vectorization_threshold)
 
-    partial_times.append({
-        "step": "Vectorizing segmentation",
-        "runtime": time.time() - start
-    })
+    partial_times["vectorization"] = time.time() - start
 
     # 5. Combine patchlets shapes single shapefile
     start = time.time()
@@ -203,20 +191,15 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
     print("5. Combining patchlet shapes into single shapefile...")
     n_fields = combine_patchlet_shapes(vecs_dir, out_path)
 
-    partial_times.append({
-        "step": "Combining patchlet shapes into single shapefile",
-        "runtime": time.time() - start
-    })
+    partial_times["combine_patchlet_shapes"] = time.time() - start
 
     # 6. Create the output response
     response = {
         "message": "Segmentation pipeline completed successfully.",
-        "output": [
-            {
-                "path": out_path,
-                "type": "Output shapefile"
-            }
-        ],
+        "output": {
+            "segmentation_map": "out_path",
+        },
+        "status": "success",
         "metrics": {
             "tif_path": tif_path,
             "model_path": model_path,
@@ -260,7 +243,7 @@ if __name__ == "__main__":
 
     # Get the TIF file path
     try:
-        tif_path = input_json["input"]["RGB"]
+        tif_path = input_json["input"]["RGB"][0]
     except Exception as e:
         raise ValueError(f"TIF path not found in input. Error: {e}")
     
@@ -312,4 +295,3 @@ if __name__ == "__main__":
         json.dump(response, f)
 
     print(response)
-
