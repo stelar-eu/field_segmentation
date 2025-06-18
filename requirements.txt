@@ -10,3 +10,4 @@ tensorflow-addons==0.20.0
 sentinelhub
 minio
 typing_extensions==4.7.1
+fiona==1.9.6
