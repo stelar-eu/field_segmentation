@@ -1,4 +1,4 @@
-stelar_spatiotemporal==0.0.30
+stelar_spatiotemporal==0.0.32
 opencv-python
 protobuf
 munch
