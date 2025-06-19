@@ -197,7 +197,7 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
     response = {
         "message": "Segmentation pipeline completed successfully.",
         "output": {
-            "segmentation_map": "out_path",
+            "segmentation_map": out_path,
         },
         "status": "success",
         "metrics": {
@@ -214,84 +214,97 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
     return response
 
 if __name__ == "__main__":
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(description="Field Segmentation Pipeline")
-    parser.add_argument("input_json", nargs="?", help="Path to input JSON file")
-    parser.add_argument("output_json", nargs="?", help="Path to output JSON file")
-    parser.add_argument("--tmpdir", type=str, help="Directory for temporary files", default="/tmp")
-    
-    args = parser.parse_args()
-    
-    # Set default values for input and output JSON paths if not provided
-    if not args.input_json:
-        input_json_path = "/home/jens/ownCloud/Documents/3.Werk/0.TUe_Research/0.STELAR/0.VISTA/VISTA_workbench/src/modules/segmentation/resources/input.json"
-    else:
-        input_json_path = args.input_json
-    
-    if not args.output_json:
-        output_json_path = "/home/jens/ownCloud/Documents/3.Werk/0.TUe_Research/0.STELAR/0.VISTA/VISTA_workbench/src/modules/segmentation/resources/output.json"
-    else:
-        output_json_path = args.output_json
-
-    # Read and parse the input JSON file
-    with open(input_json_path, "r") as f:
-        input_json = json.load(f)
-
-    # Check for result key in the JSON structure
-    if "result" in input_json:
-        input_json = input_json["result"]
-
-    # Get the TIF file path
     try:
-        tif_path = input_json["input"]["RGB"][0]
-    except Exception as e:
-        raise ValueError(f"TIF path not found in input. Error: {e}")
-    
-    # More required arguments
-    try:
-        output_path = input_json["output"]["segmentation_map"]
-        model_path = input_json["parameters"]["model_path"]
-    except Exception as e:
-        raise ValueError(f"Missing required arguments. Please see the documentation for the suggested input format. Error: {e}")
-    
-    # Check if minio credentials are provided
-    if "minio" in input_json:
+        # Parse command line arguments
+        parser = argparse.ArgumentParser(description="Field Segmentation Pipeline")
+        parser.add_argument("input_json", nargs="?", help="Path to input JSON file")
+        parser.add_argument("output_json", nargs="?", help="Path to output JSON file")
+        parser.add_argument("--tmpdir", type=str, help="Directory for temporary files", default="/tmp")
+        
+        args = parser.parse_args()
+        
+        # Set default values for input and output JSON paths if not provided
+        if not args.input_json:
+            input_json_path = "/home/jens/ownCloud/Documents/3.Werk/0.TUe_Research/0.STELAR/0.VISTA/VISTA_workbench/src/modules/segmentation/resources/input.json"
+        else:
+            input_json_path = args.input_json
+        
+        if not args.output_json:
+            output_json_path = "/home/jens/ownCloud/Documents/3.Werk/0.TUe_Research/0.STELAR/0.VISTA/VISTA_workbench/src/modules/segmentation/resources/output.json"
+        else:
+            output_json_path = args.output_json
+
+        # Read and parse the input JSON file
+        with open(input_json_path, "r") as f:
+            input_json = json.load(f)
+
+        # Check for result key in the JSON structure
+        if "result" in input_json:
+            input_json = input_json["result"]
+
+        # Get the TIF file path
         try:
-            id = input_json["minio"]["id"]
-            key = input_json["minio"]["key"]
-            token = input_json["minio"].get("skey")
-            url = input_json["minio"]["endpoint_url"]
-
-            os.environ["MINIO_ACCESS_KEY"] = id
-            os.environ["MINIO_SECRET_KEY"] = key
-            os.environ["MINIO_ENDPOINT_URL"] = url
-
-            # If token is provided, set it as well
-            if token:
-                os.environ["MINIO_SESSION_TOKEN"] = token
-
-            os.environ["AWS_ACCESS_KEY_ID"] = id
-            os.environ["AWS_SECRET_ACCESS_KEY"] = key
-            if token:
-                os.environ["AWS_SESSION_TOKEN"] = token
+            tif_path = input_json["input"]["RGB"][0]
         except Exception as e:
-            raise ValueError(f"Access and secret keys are required if any path is on MinIO. Error: {e}")
-    
-    # Check if tmpdir is provided in command line or parameters
-    # Command line argument has priority over JSON parameter
-    tmpdir = args.tmpdir if args.tmpdir else input_json["parameters"].get("tmpdir", '/tmp')
-    
-    # Run the pipeline
-    response = segmentation_pipeline(
-        tif_path, 
-        output_path, 
-        model_path, 
-        vectorization_threshold=input_json["parameters"].get("vectorization_threshold", 0.8), # Default to 0.8 if not provided
-        tmpdir=tmpdir
-        )
-    
-    # Write the output JSON file
-    with open(output_json_path, "w") as f:
-        json.dump(response, f)
+            raise ValueError(f"TIF path not found in input. Error: {e}")
+        
+        # More required arguments
+        try:
+            output_path = input_json["output"]["segmentation_map"]
+            model_path = input_json["parameters"]["model_path"]
+        except Exception as e:
+            raise ValueError(f"Missing required arguments. Please see the documentation for the suggested input format. Error: {e}")
+        
+        # Check if minio credentials are provided
+        if "minio" in input_json:
+            try:
+                id = input_json["minio"]["id"]
+                key = input_json["minio"]["key"]
+                token = input_json["minio"].get("skey")
+                url = input_json["minio"]["endpoint_url"]
 
-    print(response)
+                os.environ["MINIO_ACCESS_KEY"] = id
+                os.environ["MINIO_SECRET_KEY"] = key
+                os.environ["MINIO_ENDPOINT_URL"] = url
+
+                # If token is provided, set it as well
+                if token:
+                    os.environ["MINIO_SESSION_TOKEN"] = token
+
+                os.environ["AWS_ACCESS_KEY_ID"] = id
+                os.environ["AWS_SECRET_ACCESS_KEY"] = key
+                if token:
+                    os.environ["AWS_SESSION_TOKEN"] = token
+            except Exception as e:
+                raise ValueError(f"Access and secret keys are required if any path is on MinIO. Error: {e}")
+        
+        # Check if tmpdir is provided in command line or parameters
+        # Command line argument has priority over JSON parameter
+        tmpdir = args.tmpdir if args.tmpdir else input_json["parameters"].get("tmpdir", '/tmp')
+        
+        # Run the pipeline
+        response = segmentation_pipeline(
+            tif_path, 
+            output_path, 
+            model_path, 
+            vectorization_threshold=input_json["parameters"].get("vectorization_threshold", 0.8), # Default to 0.8 if not provided
+            tmpdir=tmpdir
+        )
+        
+        # Write the output JSON file
+        with open(output_json_path, "w") as f:
+            json.dump(response, f)
+
+        print(response)
+
+    except Exception as e:
+        error_response = {
+            "message": "An error occurred during the segmentation pipeline.",
+            "error": str(e),
+            "status": "failed"
+        }
+        # Write the error JSON file
+        with open(output_json_path, "w") as f:
+            json.dump(error_response, f)
+
+        print(error_response)
