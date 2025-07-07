@@ -233,6 +233,7 @@ if __name__ == "__main__":
     else:
         output_json_path = args.output_json
 
+    try:
         # Read and parse the input JSON file
         with open(input_json_path, "r") as f:
             input_json = json.load(f)
