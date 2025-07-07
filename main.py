@@ -53,11 +53,13 @@ def setup_client():
         url = os.environ["MINIO_ENDPOINT_URL"]
         access_key = os.environ["MINIO_ACCESS_KEY"]
         secret_key = os.environ["MINIO_SECRET_KEY"]
+        session_token = os.environ.get("MINIO_SESSION_TOKEN", None)
 
         minio_client = Minio(
             url.replace("https://", "").replace("http://", ""),
             access_key=access_key,
             secret_key=secret_key,
+            session_token=session_token if session_token else None,
             secure= url.startswith("https://")
         )
         return minio_client
@@ -83,7 +85,7 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
         Directory for temporary files, by default '/tmp'
     """
     total_start = time.time()
-    partial_times = []
+    partial_times = {}
     
     os.environ["TMPDIR"] = tmpdir
         
@@ -115,9 +117,7 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
 
         print(f"Read {bands_data.shape[0]} bands from TIF file: {tif_path}")
 
-        crs = CRS(src.crs.to_epsg()) if src.crs else CRS.WGS84
-        transform = src.transform
-        
+        crs = CRS(src.crs.to_epsg()) if src.crs else CRS.WGS84        
         # Get date from filename or metadata (assuming format contains date)
         filename = os.path.basename(tif_path)
         # Extract date from filename pattern like S2B_30TYQ2BP_220614_R.TIF
@@ -148,10 +148,7 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
     eopatch.bbox = BBox(bbox=src.bounds, crs=crs)
     eopatch.save(eop_path, overwrite_permission=OverwritePermission.OVERWRITE_PATCH)
 
-    partial_times.append({
-        "step": "Reading TIF file and creating eopatch",
-        "runtime": time.time() - start
-    })
+    partial_times["tif_reading_eopatch_creation"] = time.time() - start
 
     # 2. Splitting the eopatch into patchlets
     start = time.time()
@@ -169,10 +166,7 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
 
     patchify_segmentation_data(eop_path, outdir=plet_dir, n_jobs=1, patchlet_size=patchlet_shape, buffer=buffer)
 
-    partial_times.append({
-        "step": "Splitting eopatch into patchlets",
-        "runtime": time.time() - start
-    })
+    partial_times["eopatch_split_into_patchlets"] = time.time() - start
 
     # 3. Run segmentation
     start = time.time()
@@ -180,10 +174,7 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
     print("3. Running segmentation...")
     segment_patchlets(model_path, plet_dir)
 
-    partial_times.append({
-        "step": "Running segmentation",
-        "runtime": time.time() - start
-    })
+    partial_times["segmentation"] = time.time() - start
 
     # 4. Vectorize segmentation
     start = time.time()
@@ -192,10 +183,7 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
     vecs_dir = os.path.join(tmpdir, "contours")
     vectorize_patchlets(plet_dir, outdir=vecs_dir, threshold=vectorization_threshold)
 
-    partial_times.append({
-        "step": "Vectorizing segmentation",
-        "runtime": time.time() - start
-    })
+    partial_times["vectorization"] = time.time() - start
 
     # 5. Combine patchlets shapes single shapefile
     start = time.time()
@@ -203,20 +191,15 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
     print("5. Combining patchlet shapes into single shapefile...")
     n_fields = combine_patchlet_shapes(vecs_dir, out_path)
 
-    partial_times.append({
-        "step": "Combining patchlet shapes into single shapefile",
-        "runtime": time.time() - start
-    })
+    partial_times["combine_patchlet_shapes"] = time.time() - start
 
     # 6. Create the output response
     response = {
         "message": "Segmentation pipeline completed successfully.",
-        "output": [
-            {
-                "path": out_path,
-                "type": "Output shapefile"
-            }
-        ],
+        "output": {
+            "segmentation_map": out_path,
+        },
+        "status": "success",
         "metrics": {
             "tif_path": tif_path,
             "model_path": model_path,
@@ -250,66 +233,77 @@ if __name__ == "__main__":
     else:
         output_json_path = args.output_json
 
-    # Read and parse the input JSON file
-    with open(input_json_path, "r") as f:
-        input_json = json.load(f)
+        # Read and parse the input JSON file
+        with open(input_json_path, "r") as f:
+            input_json = json.load(f)
 
-    # Check for result key in the JSON structure
-    if "result" in input_json:
-        input_json = input_json["result"]
+        # Check for result key in the JSON structure
+        if "result" in input_json:
+            input_json = input_json["result"]
 
-    # Get the TIF file path
-    try:
-        tif_path = input_json["input"]["RGB"]
-    except Exception as e:
-        raise ValueError(f"TIF path not found in input. Error: {e}")
-    
-    # More required arguments
-    try:
-        output_path = input_json["output"]["segmentation_map"]
-        model_path = input_json["parameters"]["model_path"]
-    except Exception as e:
-        raise ValueError(f"Missing required arguments. Please see the documentation for the suggested input format. Error: {e}")
-    
-    # Check if minio credentials are provided
-    if "minio" in input_json:
+        # Get the TIF file path
         try:
-            id = input_json["minio"]["id"]
-            key = input_json["minio"]["key"]
-            token = input_json["minio"].get("skey")
-            url = input_json["minio"]["endpoint_url"]
-
-            os.environ["MINIO_ACCESS_KEY"] = id
-            os.environ["MINIO_SECRET_KEY"] = key
-            os.environ["MINIO_ENDPOINT_URL"] = url
-
-            # If token is provided, set it as well
-            if token:
-                os.environ["MINIO_SESSION_TOKEN"] = token
-
-            os.environ["AWS_ACCESS_KEY_ID"] = id
-            os.environ["AWS_SECRET_ACCESS_KEY"] = key
-            if token:
-                os.environ["AWS_SESSION_TOKEN"] = token
+            tif_path = input_json["input"]["RGB"][0]
         except Exception as e:
-            raise ValueError(f"Access and secret keys are required if any path is on MinIO. Error: {e}")
-    
-    # Check if tmpdir is provided in command line or parameters
-    # Command line argument has priority over JSON parameter
-    tmpdir = args.tmpdir if args.tmpdir else input_json["parameters"].get("tmpdir", '/tmp')
-    
-    # Run the pipeline
-    response = segmentation_pipeline(
-        tif_path, 
-        output_path, 
-        model_path, 
-        vectorization_threshold=input_json["parameters"].get("vectorization_threshold", 0.8), # Default to 0.8 if not provided
-        tmpdir=tmpdir
+            raise ValueError(f"TIF path not found in input. Error: {e}")
+        
+        # More required arguments
+        try:
+            output_path = input_json["output"]["segmentation_map"]
+            model_path = input_json["parameters"]["model_path"]
+        except Exception as e:
+            raise ValueError(f"Missing required arguments. Please see the documentation for the suggested input format. Error: {e}")
+        
+        # Check if minio credentials are provided
+        if "minio" in input_json:
+            try:
+                id = input_json["minio"]["id"]
+                key = input_json["minio"]["key"]
+                token = input_json["minio"].get("skey")
+                url = input_json["minio"]["endpoint_url"]
+
+                os.environ["MINIO_ACCESS_KEY"] = id
+                os.environ["MINIO_SECRET_KEY"] = key
+                os.environ["MINIO_ENDPOINT_URL"] = url
+
+                # If token is provided, set it as well
+                if token:
+                    os.environ["MINIO_SESSION_TOKEN"] = token
+
+                os.environ["AWS_ACCESS_KEY_ID"] = id
+                os.environ["AWS_SECRET_ACCESS_KEY"] = key
+                if token:
+                    os.environ["AWS_SESSION_TOKEN"] = token
+            except Exception as e:
+                raise ValueError(f"Access and secret keys are required if any path is on MinIO. Error: {e}")
+        
+        # Check if tmpdir is provided in command line or parameters
+        # Command line argument has priority over JSON parameter
+        tmpdir = args.tmpdir if args.tmpdir else input_json["parameters"].get("tmpdir", '/tmp')
+        
+        # Run the pipeline
+        response = segmentation_pipeline(
+            tif_path, 
+            output_path, 
+            model_path, 
+            vectorization_threshold=input_json["parameters"].get("vectorization_threshold", 0.8), # Default to 0.8 if not provided
+            tmpdir=tmpdir
         )
-    
-    # Write the output JSON file
-    with open(output_json_path, "w") as f:
-        json.dump(response, f)
+        
+        # Write the output JSON file
+        with open(output_json_path, "w") as f:
+            json.dump(response, f)
 
-    print(response)
+        print(response)
 
+    except Exception as e:
+        error_response = {
+            "message": "An error occurred during the segmentation pipeline.",
+            "error": str(e),
+            "status": "failed"
+        }
+        # Write the error JSON file
+        with open(output_json_path, "w") as f:
+            json.dump(error_response, f)
+
+        print(error_response)
