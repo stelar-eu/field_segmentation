@@ -13,7 +13,7 @@ from typing import List, Text, Tuple
 from stelar_spatiotemporal.lib import get_filesystem
 from stelar_spatiotemporal.preprocessing.preprocessing import combine_npys_into_eopatches
 from stelar_spatiotemporal.eolearn.core import EOPatch, FeatureType
-from stelar_spatiotemporal.segmentation.segmentation import *
+from src.segmentation.segmentation import *
 from stelar_spatiotemporal.eolearn.core import OverwritePermission
 import warnings
 warnings.filterwarnings("ignore")
@@ -85,7 +85,7 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
     total_start = time.time()
     partial_times = []
     
-    TMPDIR = tmpdir
+    os.environ["TMPDIR"] = tmpdir
         
     # 1. Read TIF file and create eopatch
     start = time.time()
@@ -95,7 +95,7 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
     # Download the TIF file if it is on MinIO
     if tif_path.startswith("s3://"):
         bucket_name, object_name = tif_path.replace("s3://", "").split('/', 1)
-        local_tif_path = os.path.join(TMPDIR, os.path.basename(object_name))
+        local_tif_path = os.path.join(tmpdir, os.path.basename(object_name))
         if not os.path.exists(local_tif_path):
             client = setup_client()
             print(f"Downloading {tif_path} to {local_tif_path}...")
@@ -133,7 +133,7 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
             acquisition_date = dt.datetime.now()
     
     # Create eopatch directly from the TIF data
-    eopatches_dir = os.path.join(TMPDIR, "segment_eopatch")
+    eopatches_dir = os.path.join(tmpdir, "segment_eopatch")
     os.makedirs(eopatches_dir, exist_ok=True)
     eop_path = os.path.join(eopatches_dir, "eopatch")
     
@@ -157,7 +157,7 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
     start = time.time()
 
     print("2. Splitting eopatch into patchlets...")
-    plet_dir = os.path.join(TMPDIR, "patchlets")
+    plet_dir = os.path.join(tmpdir, "patchlets")
 
     # Decide buffer and patchlet size; if full tile is smaller than patchlet, make buffer 0, else 100
     patchlet_shape = (1128,1128)
@@ -189,7 +189,7 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
     start = time.time()
 
     print("4. Vectorizing segmentation...")
-    vecs_dir = os.path.join(TMPDIR, "contours")
+    vecs_dir = os.path.join(tmpdir, "contours")
     vectorize_patchlets(plet_dir, outdir=vecs_dir, threshold=vectorization_threshold)
 
     partial_times.append({
@@ -241,12 +241,12 @@ if __name__ == "__main__":
     
     # Set default values for input and output JSON paths if not provided
     if not args.input_json:
-        input_json_path = "/home/jens/ownCloud/Documents/3.Werk/0.TUe_Research/0.STELAR/0.VISTA/VISTA_workbench/src/modules/segmentation/resources/input.json"
+        input_json_path = "resources/input.json"
     else:
         input_json_path = args.input_json
     
     if not args.output_json:
-        output_json_path = "/home/jens/ownCloud/Documents/3.Werk/0.TUe_Research/0.STELAR/0.VISTA/VISTA_workbench/src/modules/segmentation/resources/output.json"
+        output_json_path = "resources/output.json"
     else:
         output_json_path = args.output_json
 
