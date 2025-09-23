@@ -1,3 +1,4 @@
+import time
 import geopandas as gpd
 import os
 import json
@@ -170,12 +171,69 @@ def upscale_prediction_optimized(boundary: np.ndarray, scale_factor: int = 2, di
     boundary = upscale_and_rescale_optimized(boundary, scale_factor=scale_factor)
     
     # Final smooth with adjusted disk size
-    array = smooth_optimized(boundary, disk_size=disk_size * scale_factor)
+    boundary = smooth_optimized(boundary, disk_size=disk_size * scale_factor)
     
-    return np.expand_dims(array, axis=-1)
+    return np.expand_dims(boundary, axis=-1)
 
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning) 
+
+def to_img(rgb):
+    rgb = rgb / 10000 * 5
+
+    # Clip to [0, 1] range
+    rgb = np.clip(rgb, 0, 1)
+
+    return (rgb * 255).astype(np.uint8)
+
+def clahe(rgb):
+    lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+    cl = clahe.apply(l)
+    enhanced_img = cv2.merge((cl,a,b))
+    return cv2.cvtColor(enhanced_img, cv2.COLOR_LAB2RGB)
+
+def unsharp_masking(rgb):
+    blurred = cv2.GaussianBlur(rgb, (9,9), 10.0)
+    sharpened = cv2.addWeighted(rgb, 1.5, blurred, -0.5, 0)
+    return sharpened
+
+# Sobel filter
+def sobel_enhanced_rgb(rgb, alpha=0.7):
+    # Convert to grayscale and compute Sobel magnitude
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=5)
+    sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=5)
+    sobel_magnitude = np.sqrt(sobel_x**2 + sobel_y**2)
+    sobel_magnitude = np.clip(sobel_magnitude, 0, 255).astype(np.uint8)
+    
+    # Normalize and stack to RGB
+    sobel_rgb = cv2.cvtColor(sobel_magnitude, cv2.COLOR_GRAY2RGB)
+
+    # Blend with original image
+    enhanced = cv2.addWeighted(rgb, alpha, sobel_rgb, 1 - alpha, 0)
+    return enhanced
+
+def normalize(bands: np.ndarray) -> np.ndarray:
+    """
+    Normalize bands to have zero mean and unit variance.
+    Bands should be in the shape (height, width, n_bands).
+    """
+    if bands.ndim != 3:
+        raise ValueError("Input bands must be a 3D array with shape (height, width, n_bands)")
+
+    # Calculate mean and std across spatial dimensions
+    mean_stats = np.mean(bands, axis=(0, 1), keepdims=True)
+    std_stats = np.std(bands, axis=(0, 1), keepdims=True)
+
+    # Normalize bands
+    norm_bands = (bands - mean_stats) / std_stats
+
+    # Clip to [-2, 2]
+    norm_bands = np.clip(norm_bands, -2, 2)
+
+    return norm_bands
 
 def segment_eopatch(eop_path: str, model: ResUnetA):
     # Load tile data
@@ -191,14 +249,28 @@ def segment_eopatch(eop_path: str, model: ResUnetA):
 
     # Iterate over inference timestamps
     for timestamp, bands in zip(timestamps, data):
-        mean_stats = np.mean(bands, axis=(0,1))
-        std_stats = np.std(bands, axis=(0,1))
-        
-        # Normalize bands
-        norm_bands = (bands - mean_stats) / std_stats
+        # nir = bands[..., 3]  # Assuming NIR is the 4th band
+        # rgb = bands[..., :3]  # Assuming RGB is the first three bands
+
+        # # To image [0, 255] range
+        # img = to_img(rgb)
+
+        # # Enhance with clahe -> unsharp masking -> sobel filter
+        # img = clahe(img)
+        # img = unsharp_masking(img)
+        # img = sobel_enhanced_rgb(img)
+
+        # # Merge NIR band into RGB
+        # img = np.concatenate([img, nir[..., np.newaxis]], axis=-1)
+
+        # Normalize image
+        # img = normalize(img)
+
+        # Only normalize bands (old way)
+        img = normalize(bands)
 
         # Segment image
-        extent, boundary, distance = model.net.predict(norm_bands[np.newaxis, ...], batch_size=1)
+        extent, boundary, distance = model.net.predict(img[np.newaxis, ...], batch_size=1)
 
         # Crop to original size
         extent = crop_array(extent, 12)[..., :1]
@@ -217,7 +289,6 @@ def segment_eopatch(eop_path: str, model: ResUnetA):
 
     # Upscale and smooth segmentation map
     print("Upscaling and smoothing segmentation map")
-    # boundary_combined = upscale_prediction(boundary_combined, scale_factor=2, disk_size=2)
     boundary_combined = upscale_prediction_optimized(boundary_combined, scale_factor=2, disk_size=2)
 
     # Set as segmentation map
@@ -240,6 +311,13 @@ def segment_patchlets(modeldir:str, patchlet_dir:str):
     for i,patchlet_path in enumerate(patchlet_paths):
         print(f"{(i+1)}/{len(patchlet_paths)}: Segmenting {patchlet_path}")
         segment_eopatch(patchlet_path, model)
+
+    # Remove model from memory
+    del model
+
+    # Stop TensorFlow session
+    import tensorflow as tf
+    tf.keras.backend.clear_session()
 
 
 def prediction_to_tiff(eop_path:str, outdir:str):
@@ -267,22 +345,34 @@ def vectorize(eop_path:str, outdir:str, threshold:float=0.8):
     if os.path.exists(vec_path):
         print(f"Skipping {eop_name} as it is already vectorized")
         return
-    
 
     # Temporarily save as tiff
+    start = time.time()
     tiff_path = prediction_to_tiff(eop_path, outdir)
+    print(f"Done converting {eop_name} to tiff, took {time.time() - start:.2f} seconds")
 
+    start = time.time()
     # Vectorize tiff file using gdal
     gdal_str = f"gdal_contour -of gpkg {tiff_path} {vec_path} -fl {threshold} -amin amin -amax amax -p > /dev/null"
     os.system(gdal_str)
 
+    print(f"Done vectorizing {eop_name} with threshold {threshold}, took {time.time() - start:.2f} seconds")
+
+    start = time.time()
     # Unpack contours from tiff file
     df = unpack_contours(vec_path, threshold)
+    print(f"Done unpacking contours for {eop_name}, took {time.time() - start:.2f} seconds")
+
+    # Remove too large shapes
+    size = len(df)
+    df = df[df.geometry.area < 100_000_000]  # Filter for smaller areas
+    if len(df) < size:
+        print(f"Removed {size - len(df)} shapes larger than 100 million m^2 from {eop_name}")
 
     # Remove existing file
     try:
         os.remove(vec_path)
-    except FileNotFoundError or OSError:
+    except (FileNotFoundError, OSError):
         pass
 
     # Save as geopackage
@@ -291,7 +381,7 @@ def vectorize(eop_path:str, outdir:str, threshold:float=0.8):
     return df
 
 
-def vectorize_patchlets(patchlet_dir:str, outdir:str, n_jobs:int=8, threshold:float=0.8):
+def vectorize_patchlets(patchlet_dir:str, outdir:str, n_jobs:int=16, threshold:float=0.8):
     patchlet_paths = glob.glob(os.path.join(patchlet_dir, "*"))
 
     multiprocess_map(func=vectorize, object_list=patchlet_paths, n_jobs=n_jobs, outdir=outdir, threshold=threshold)

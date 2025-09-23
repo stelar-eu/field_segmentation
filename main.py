@@ -113,6 +113,10 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
         elif bands_data.shape[0] != 4:
             raise ValueError(f"Expected 4 bands (RGBNIR), but found {bands_data.shape[0]} bands in the TIF file.")
         
+        # Check if width and height are at least 1128x1128
+        if bands_data.shape[1] < 1128 or bands_data.shape[2] < 1128:
+            raise ValueError(f"Input TIF image is too small. Minimum size is 1128x1128 pixels, but got {bands_data.shape[1]}x{bands_data.shape[2]} pixels.")
+        
         bands_data *= 100 # To match the old RAS format scaling
 
         print(f"Read {bands_data.shape[0]} bands from TIF file: {tif_path}")
@@ -148,6 +152,9 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
     eopatch.bbox = BBox(bbox=src.bounds, crs=crs)
     eopatch.save(eop_path, overwrite_permission=OverwritePermission.OVERWRITE_PATCH)
 
+    # Remove eopatch from memory to free up resources
+    del eopatch
+
     partial_times["tif_reading_eopatch_creation"] = time.time() - start
 
     # 2. Splitting the eopatch into patchlets
@@ -164,7 +171,7 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
     if eop_shape[1] <= patchlet_shape[0] and eop_shape[2] <= patchlet_shape[1]:
         buffer = 0
 
-    patchify_segmentation_data(eop_path, outdir=plet_dir, n_jobs=1, patchlet_size=patchlet_shape, buffer=buffer)
+    # patchify_segmentation_data(eop_path, outdir=plet_dir, n_jobs=1, patchlet_size=patchlet_shape, buffer=buffer)
 
     partial_times["eopatch_split_into_patchlets"] = time.time() - start
 
@@ -172,7 +179,7 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
     start = time.time()
 
     print("3. Running segmentation...")
-    segment_patchlets(model_path, plet_dir)
+    # segment_patchlets(model_path, plet_dir)
 
     partial_times["segmentation"] = time.time() - start
 
