@@ -5,7 +5,6 @@ munch
 numpy==1.26.4
 pystac
 pystac-client
-tensorflow==2.10.1
 tensorflow-addons
 sentinelhub
 minio

@@ -17,9 +17,9 @@ from PIL import Image
 import math
 
 from .bands_data_package import BandsDataPackage
+from .models.segmentation_unets import ResUnetA
 from stelar_spatiotemporal.preprocessing.preprocessing import split_patch_into_patchlets, combine_npys_into_eopatches
 from stelar_spatiotemporal.eolearn.core import EOPatch, OverwritePermission, FeatureType
-from stelar_spatiotemporal.eoflow.models.segmentation_unets import ResUnetA
 from stelar_spatiotemporal.lib import *
 from stelar_spatiotemporal.io import S3FileSystem
 

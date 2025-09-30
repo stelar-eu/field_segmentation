@@ -15,9 +15,25 @@ from stelar_spatiotemporal.preprocessing.preprocessing import combine_npys_into_
 from stelar_spatiotemporal.eolearn.core import EOPatch, FeatureType
 from src.segmentation.segmentation import *
 from stelar_spatiotemporal.eolearn.core import OverwritePermission
+
+import logging
+
+# Configure logging with detailed format
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
+# Remove all warnings
 import warnings
 warnings.filterwarnings("ignore")
 
+# Suppress TensorFlow GPU warnings
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # Suppress TF logging
+import logging
+logging.getLogger('tensorflow').setLevel(logging.ERROR)
 
 def parse_sdates(s) -> List[dt.datetime]:
     """
@@ -34,7 +50,7 @@ def parse_sdates(s) -> List[dt.datetime]:
     try:
         sdates = [dt.datetime.strptime(date, "%Y-%m-%d") for date in sdates]
     except ValueError:
-        print("Dates should be given in the format YYYY-MM-DD")
+        logger.error("Dates should be given in the format YYYY-MM-DD")
         sys.exit(1)
 
     return sdates
@@ -42,7 +58,7 @@ def parse_sdates(s) -> List[dt.datetime]:
 def cleanup(*args):
     for todel_path in args:
         if os.path.exists(todel_path):
-            print("Deleting {}".format(todel_path))
+            logger.info("Deleting {}".format(todel_path))
             os.system("rm -rf {}".format(todel_path))
 
 def setup_client():
@@ -92,7 +108,7 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
     # 1. Read TIF file and create eopatch
     start = time.time()
 
-    print("1. Reading TIF file and creating eopatch...")
+    logger.info("1. Reading TIF file and creating eopatch...")
     
     # Download the TIF file if it is on MinIO
     if tif_path.startswith("s3://"):
@@ -100,7 +116,7 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
         local_tif_path = os.path.join(tmpdir, os.path.basename(object_name))
         if not os.path.exists(local_tif_path):
             client = setup_client()
-            print(f"Downloading {tif_path} to {local_tif_path}...")
+            logger.info(f"Downloading {tif_path} to {local_tif_path}...")
             client.fget_object(bucket_name, object_name, local_tif_path)
         tif_path = local_tif_path
     
@@ -119,7 +135,7 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
         
         bands_data *= 100 # To match the old RAS format scaling
 
-        print(f"Read {bands_data.shape[0]} bands from TIF file: {tif_path}")
+        logger.info(f"Read {bands_data.shape[0]} bands from TIF file: {tif_path}")
 
         crs = CRS(src.crs.to_epsg()) if src.crs else CRS.WGS84        
         # Get date from filename or metadata (assuming format contains date)
@@ -160,7 +176,7 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
     # 2. Splitting the eopatch into patchlets
     start = time.time()
 
-    print("2. Splitting eopatch into patchlets...")
+    logger.info("2. Splitting eopatch into patchlets...")
     plet_dir = os.path.join(tmpdir, "patchlets")
 
     # Decide buffer and patchlet size; if full tile is smaller than patchlet, make buffer 0, else 100
@@ -171,22 +187,22 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
     if eop_shape[1] <= patchlet_shape[0] and eop_shape[2] <= patchlet_shape[1]:
         buffer = 0
 
-    # patchify_segmentation_data(eop_path, outdir=plet_dir, n_jobs=1, patchlet_size=patchlet_shape, buffer=buffer)
+    patchify_segmentation_data(eop_path, outdir=plet_dir, n_jobs=1, patchlet_size=patchlet_shape, buffer=buffer)
 
     partial_times["eopatch_split_into_patchlets"] = time.time() - start
 
     # 3. Run segmentation
     start = time.time()
 
-    print("3. Running segmentation...")
-    # segment_patchlets(model_path, plet_dir)
+    logger.info("3. Running segmentation...")
+    segment_patchlets(model_path, plet_dir)
 
     partial_times["segmentation"] = time.time() - start
 
     # 4. Vectorize segmentation
     start = time.time()
 
-    print("4. Vectorizing segmentation...")
+    logger.info("4. Vectorizing segmentation...")
     vecs_dir = os.path.join(tmpdir, "contours")
     vectorize_patchlets(plet_dir, outdir=vecs_dir, threshold=vectorization_threshold)
 
@@ -195,7 +211,7 @@ def segmentation_pipeline(tif_path: Text, out_path: Text, model_path: Text, vect
     # 5. Combine patchlets shapes single shapefile
     start = time.time()
 
-    print("5. Combining patchlet shapes into single shapefile...")
+    logger.info("5. Combining patchlet shapes into single shapefile...")
     n_fields = combine_patchlet_shapes(vecs_dir, out_path)
 
     partial_times["combine_patchlet_shapes"] = time.time() - start
@@ -231,7 +247,7 @@ if __name__ == "__main__":
     
     # Set default values for input and output JSON paths if not provided
     if not args.input_json:
-        input_json_path = "resources/input.json"
+        input_json_path = "resources/input_small.json"
     else:
         input_json_path = args.input_json
     
@@ -302,7 +318,7 @@ if __name__ == "__main__":
         with open(output_json_path, "w") as f:
             json.dump(response, f)
 
-        print(response)
+        logger.info(response)
 
     except Exception as e:
         error_response = {
@@ -314,4 +330,4 @@ if __name__ == "__main__":
         with open(output_json_path, "w") as f:
             json.dump(error_response, f)
 
-        print(error_response)
+        logger.error(error_response)
