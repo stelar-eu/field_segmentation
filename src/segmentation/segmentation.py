@@ -23,6 +23,9 @@ from stelar_spatiotemporal.eolearn.core import EOPatch, OverwritePermission, Fea
 from stelar_spatiotemporal.lib import *
 from stelar_spatiotemporal.io import S3FileSystem
 
+import logging
+logger = logging.getLogger()
+
 
 def unpack_contours(df_filename: str, threshold: float = 0.8) -> gpd.GeoDataFrame:
     """ Convert multipolygon contour row above given threshold into multiple Polygon rows. """
@@ -62,9 +65,9 @@ def load_model(model_folder:str, tile_shape:tuple = (None,1128,1128,4)):
         import tensorflow as tf
         gpus = tf.config.list_physical_devices('GPU')
         if gpus:
-            print(f"Using GPU: {gpus[0].name}")
+            logger.info(f"Using GPU: {gpus[0].name}")
         else:
-            print("No GPU found, using CPU")
+            logger.info("No GPU found, using CPU")
 
     # Load, build and compile model
     model = ResUnetA(model_cfg)
@@ -75,7 +78,7 @@ def load_model(model_folder:str, tile_shape:tuple = (None,1128,1128,4)):
 
     # If filesystem of model folder is s3, download weights into temporary folder
     if type(filesystem) == S3FileSystem:
-        print("Downloading model weights from S3")
+        logger.info("Downloading model weights from S3")
         tmpdir = os.environ.get("TMPDIR", "/tmp")
         new_checkpoint_dir = os.path.join(tmpdir, 'checkpoints')
         if not os.path.exists(new_checkpoint_dir):
@@ -244,7 +247,7 @@ def segment_eopatch(eop_path: str, model: ResUnetA):
 
     # Skip already segmented patches
     if "SEGMENTATION" in eop.data_timeless.keys():
-        print(f"Skipping {eop_path} as it is already segmented")
+        logger.info(f"Skipping {eop_path} as it is already segmented")
         return
 
     # Iterate over inference timestamps
@@ -288,7 +291,7 @@ def segment_eopatch(eop_path: str, model: ResUnetA):
     boundary_combined = combine_temporal(boundary).squeeze()
 
     # Upscale and smooth segmentation map
-    print("Upscaling and smoothing segmentation map")
+    logger.info("Upscaling and smoothing segmentation map")
     boundary_combined = upscale_prediction_optimized(boundary_combined, scale_factor=2, disk_size=2)
 
     # Set as segmentation map
@@ -303,13 +306,13 @@ def segment_eopatch(eop_path: str, model: ResUnetA):
 
 def segment_patchlets(modeldir:str, patchlet_dir:str):
     # Load model
-    print("Loading model")
+    logger.info("Loading model")
     model = load_model(modeldir)
 
     # Segment each patchlet
     patchlet_paths = glob.glob(os.path.join(patchlet_dir, "*"))
     for i,patchlet_path in enumerate(patchlet_paths):
-        print(f"{(i+1)}/{len(patchlet_paths)}: Segmenting {patchlet_path}")
+        logger.info(f"{(i+1)}/{len(patchlet_paths)}: Segmenting {patchlet_path}")
         segment_eopatch(patchlet_path, model)
 
     # Remove model from memory
@@ -343,31 +346,31 @@ def vectorize(eop_path:str, outdir:str, threshold:float=0.8):
 
     # Skip if already vectorized
     if os.path.exists(vec_path):
-        print(f"Skipping {eop_name} as it is already vectorized")
+        logger.info(f"Skipping {eop_name} as it is already vectorized")
         return
 
     # Temporarily save as tiff
     start = time.time()
     tiff_path = prediction_to_tiff(eop_path, outdir)
-    print(f"Done converting {eop_name} to tiff, took {time.time() - start:.2f} seconds")
+    logger.info(f"Done converting {eop_name} to tiff, took {time.time() - start:.2f} seconds")
 
     start = time.time()
     # Vectorize tiff file using gdal
     gdal_str = f"gdal_contour -of gpkg {tiff_path} {vec_path} -fl {threshold} -amin amin -amax amax -p > /dev/null"
     os.system(gdal_str)
 
-    print(f"Done vectorizing {eop_name} with threshold {threshold}, took {time.time() - start:.2f} seconds")
+    logger.info(f"Done vectorizing {eop_name} with threshold {threshold}, took {time.time() - start:.2f} seconds")
 
     start = time.time()
     # Unpack contours from tiff file
     df = unpack_contours(vec_path, threshold)
-    print(f"Done unpacking contours for {eop_name}, took {time.time() - start:.2f} seconds")
+    logger.info(f"Done unpacking contours for {eop_name}, took {time.time() - start:.2f} seconds")
 
     # Remove too large shapes
     size = len(df)
     df = df[df.geometry.area < 100_000_000]  # Filter for smaller areas
     if len(df) < size:
-        print(f"Removed {size - len(df)} shapes larger than 100 million m^2 from {eop_name}")
+        logger.info(f"Removed {size - len(df)} shapes larger than 100 million m^2 from {eop_name}")
 
     # Remove existing file
     try:
@@ -399,7 +402,7 @@ def combine_shapes(s1:BaseGeometry,s2:BaseGeometry):
 def combine_shapes_recursive(shapes:list, left:list, right:list, crs:CRS=CRS('32630')):
     """Recursively combine shapes (divide and conquer) and save intermediate results"""
 
-    print("Combining shapes progress: {:.2f}%".format(left / len(shapes) * 100), end="\r")
+    logger.info("Combining shapes progress: {:.2f}%".format(left / len(shapes) * 100), end="\r")
 
     out = []
     if left == right:
@@ -434,7 +437,7 @@ def combine_shapes_overlapping(dfs:list, crs:CRS=None, min_area:int = 0, max_are
         shapes += df.geometry.tolist()
         boxes.append(box(*df.geometry.total_bounds))
 
-    print("Total number of shapes before combining and filtering: ", len(shapes))
+    logger.info("Total number of shapes before combining and filtering: ", len(shapes))
 
     # Get the union of intersections of all bboxes (ie the area of potential overlap)
     total_intersection = unary_union([box.intersection(other_box) for box in boxes for other_box in boxes if box != other_box])
@@ -463,7 +466,7 @@ def combine_shapes_overlapping(dfs:list, crs:CRS=None, min_area:int = 0, max_are
     final_df = final_df[final_df.geometry.area > min_area]
     final_df = final_df[final_df.geometry.area < max_area]
 
-    print("Total number of shapes after combining and filtering: ", len(final_df))
+    logger.info("Total number of shapes after combining and filtering: ", len(final_df))
 
     return final_df
 
@@ -476,7 +479,7 @@ def combine_patchlet_shapes(contours_dir:str, outpath:str, crs:CRS=None, min_are
     dfs = [gpd.read_file(vec_path) for vec_path in vec_paths]
 
     # Combine shapes
-    print("Combining shapes", end="\r")
+    logger.info("Combining shapes", end="\r")
     df = combine_shapes_overlapping(dfs, crs, min_area, max_area)
 
     # Filter by area
@@ -484,7 +487,7 @@ def combine_patchlet_shapes(contours_dir:str, outpath:str, crs:CRS=None, min_are
     df = df[df.area < max_area]
 
     # Save df in temporary location
-    print("Saving final result", end="\r")
+    logger.info("Saving final result", end="\r")
     tmpdir = os.environ.get("TMPDIR", "/tmp")
     temp_path = os.path.join(tmpdir, os.path.basename(outpath))
     df.to_file(temp_path, mode='w')
@@ -494,7 +497,7 @@ def combine_patchlet_shapes(contours_dir:str, outpath:str, crs:CRS=None, min_are
         os.fsync(f.fileno())
 
     # Move to final location
-    print("Moving to final location", end="\r")
+    logger.info("Moving to final location", end="\r")
     filesystem = get_filesystem(outpath)
     filesystem.move(temp_path, outpath, overwrite=True)
 
@@ -539,7 +542,7 @@ def combine_patchlet_shapes(contours_dir:str, outpath:str, crs:CRS=None, min_are
             
 #     # Partition dates into groups of partition_size
 #     date_partitions = [dates[i:i + partition_size] for i in range(0, len(dates), partition_size)]
-#     print(f"Processing {len(date_partitions)} partitions of {partition_size} dates each")
+#     logger.info(f"Processing {len(date_partitions)} partitions of {partition_size} dates each")
 
 #     # Create parent directory
 #     parent_dir = os.path.join(datadir, eopatch_name)
@@ -547,7 +550,7 @@ def combine_patchlet_shapes(contours_dir:str, outpath:str, crs:CRS=None, min_are
 
 #     # Process each partition
 #     for i, partition in enumerate(date_partitions):
-#         print(f"Processing partition {i+1}/{len(date_partitions)}", end="\r")
+#         logger.info(f"Processing partition {i+1}/{len(date_partitions)}", end="\r")
 
 #         # Combine the bands into one array
 #         DATA = None # SHAPE: (n_dates, img_h, img_w, n_bands)
@@ -598,7 +601,7 @@ def combine_patchlet_shapes(contours_dir:str, outpath:str, crs:CRS=None, min_are
 #             eopatch.mask['IS_DATA'] = MASK
 
 #         # Save eopatch
-#         print(f"Saving eopatch {i+1}/{len(date_partitions)}", end="\r")
+#         logger.info(f"Saving eopatch {i+1}/{len(date_partitions)}", end="\r")
 #         begin_date = partition[0].strftime(dateformat)
 #         eopatch.save(os.path.join(parent_dir, f"{eopatch_name}_{begin_date}"), overwrite_permission=OverwritePermission.OVERWRITE_PATCH)
 
@@ -631,7 +634,7 @@ def combine_rgb_npys_into_eopatch(bands_data_package:BandsDataPackage, outdir:st
                 raise ValueError(f"Date {segment_date} not found in {band_data_package.BAND_DIR}")
 
     # Combine the segment dates into one eopatch per band
-    print("Combining segment dates into one eopatch per band")
+    logger.info("Combining segment dates into one eopatch per band")
     eop_paths = []
     for band_data_package in bands:
         bbox = load_bbox(os.path.join(band_data_package.BAND_DIR, "bbox.pkl"))
@@ -652,7 +655,7 @@ def combine_rgb_npys_into_eopatch(bands_data_package:BandsDataPackage, outdir:st
         )
 
     # Now combine the eopatches into one eopatch
-    print("Combining eopatches into one eopatch")
+    logger.info("Combining eopatches into one eopatch")
     base_eopatch = None
     for eop_path in eop_paths:
         eop = EOPatch.load(eop_path)
@@ -662,7 +665,7 @@ def combine_rgb_npys_into_eopatch(bands_data_package:BandsDataPackage, outdir:st
             base_eopatch.data['BANDS'] = np.concatenate((base_eopatch.data['BANDS'], eop.data['BANDS']), axis=-1)
         
     # Save the eopatch
-    print("Saving eopatch")
+    logger.info("Saving eopatch")
     outpath = os.path.join(outdir, "segment_eopatch")
     base_eopatch.save(outpath, overwrite_permission=OverwritePermission.OVERWRITE_FEATURES)
 
